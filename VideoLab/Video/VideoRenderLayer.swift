@@ -12,6 +12,7 @@ class VideoRenderLayer {
     var trackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
     var timeRangeInTimeline: CMTimeRange
     var preferredTransform: CGAffineTransform = CGAffineTransform.identity
+    var presentationSize: CGSize?
     
     init(renderLayer: RenderLayer) {
         self.renderLayer = renderLayer
@@ -27,6 +28,7 @@ class VideoRenderLayer {
         }
         trackID = preferredTrackID
         preferredTransform = assetTrack.preferredTransform
+        presentationSize = assetTrack.naturalSize.applying(assetTrack.preferredTransform)
 
         let compositionTrack: AVMutableCompositionTrack? = {
             if let compositionTrack = composition.track(withTrackID: preferredTrackID) {

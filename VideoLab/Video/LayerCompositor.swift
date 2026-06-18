@@ -109,7 +109,8 @@ class LayerCompositor {
             }
             
             guard let videoTexture = bgraVideoTexture(from: pixelBuffer,
-                                                      preferredTransform: videoRenderLayer.preferredTransform) else {
+                                                      preferredTransform: videoRenderLayer.preferredTransform,
+                                                      presentationSize: videoRenderLayer.presentationSize) else {
                 return
             }
             
@@ -143,20 +144,21 @@ class LayerCompositor {
         }
     }
 
-    private func bgraVideoTexture(from pixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform) -> Texture? {
+    private func bgraVideoTexture(from pixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> Texture? {
         var videoTexture: Texture?
         let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
         let bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let videoTextureSize = self.videoTextureSize(bufferWidth: bufferWidth,
+                                                     bufferHeight: bufferHeight,
+                                                     preferredTransform: preferredTransform,
+                                                     presentationSize: presentationSize)
 
         let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer);
         if pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
             let luminanceTexture = Texture.makeTexture(pixelBuffer: pixelBuffer, pixelFormat: .r8Unorm, width:bufferWidth, height: bufferHeight, plane: 0)
             let chrominanceTexture = Texture.makeTexture(pixelBuffer: pixelBuffer, pixelFormat: .rg8Unorm, width: bufferWidth / 2, height: bufferHeight / 2, plane: 1)
             if let luminanceTexture = luminanceTexture, let chrominanceTexture = chrominanceTexture {
-                let videoTextureSize = CGSize(width: bufferWidth, height: bufferHeight).applying(preferredTransform)
-                let videoTextureWidth = abs(Int(videoTextureSize.width))
-                let videoTextureHeight = abs(Int(videoTextureSize.height))
-                videoTexture = sharedMetalRenderingDevice.textureCache.requestTexture(width: videoTextureWidth, height: videoTextureHeight)
+                videoTexture = sharedMetalRenderingDevice.textureCache.requestTexture(width: videoTextureSize.width, height: videoTextureSize.height)
                 if let videoTexture = videoTexture {
                     videoTexture.lock()
                     
@@ -173,10 +175,7 @@ class LayerCompositor {
         else if pixelFormatType == kCVPixelFormatType_32BGRA {
             let fullDataTexture = Texture.makeTexture(pixelBuffer: pixelBuffer, pixelFormat: .bgra8Unorm, width:bufferWidth, height: bufferHeight, plane: 0)
             if let fullDataTexture {
-                let videoTextureSize = CGSize(width: bufferWidth, height: bufferHeight).applying(preferredTransform)
-                let videoTextureWidth = abs(Int(videoTextureSize.width))
-                let videoTextureHeight = abs(Int(videoTextureSize.height))
-                videoTexture = sharedMetalRenderingDevice.textureCache.requestTexture(width: videoTextureWidth, height: videoTextureHeight)
+                videoTexture = sharedMetalRenderingDevice.textureCache.requestTexture(width: videoTextureSize.width, height: videoTextureSize.height)
                 if let videoTexture = videoTexture {
                     videoTexture.lock()
                     let orientationMatrix = preferredTransform.normalizeOrientationMatrix()
@@ -190,6 +189,32 @@ class LayerCompositor {
             videoTexture = Texture.makeTexture(pixelBuffer: pixelBuffer)
         }
         return videoTexture
+    }
+
+    private func videoTextureSize(bufferWidth: Int, bufferHeight: Int, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> (width: Int, height: Int) {
+        if let presentationSize = presentationSize,
+           let width = textureDimension(presentationSize.width),
+           let height = textureDimension(presentationSize.height) {
+            return (width, height)
+        }
+
+        let transformedSize = CGSize(width: bufferWidth, height: bufferHeight).applying(preferredTransform)
+        let width = textureDimension(transformedSize.width) ?? max(bufferWidth, 1)
+        let height = textureDimension(transformedSize.height) ?? max(bufferHeight, 1)
+        return (width, height)
+    }
+
+    private func textureDimension(_ value: CGFloat) -> Int? {
+        guard value.isFinite else {
+            return nil
+        }
+
+        let dimension = abs(value).rounded()
+        guard dimension > 0 else {
+            return nil
+        }
+
+        return Int(dimension)
     }
     
     private func cloneTexture(from sourceTexture: Texture) -> Texture? {
@@ -230,4 +255,3 @@ class LayerCompositor {
         blendOperation.renderTexture(outputTexture)
     }
 }
-
