@@ -207,6 +207,10 @@ public class VideoLab {
         videoComposition.renderSize = renderComposition.renderSize
         videoComposition.instructions = instructions
         videoComposition.customVideoCompositorClass = VideoCompositor.self
+        // Source conversion is handled internally; composed output remains SDR.
+        videoComposition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+        videoComposition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+        videoComposition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
         self.videoComposition = videoComposition
         
         return videoComposition

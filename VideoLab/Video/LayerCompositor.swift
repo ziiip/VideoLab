@@ -7,8 +7,21 @@
 //
 
 import AVFoundation
+import CoreImage
+import Metal
 
 class LayerCompositor {
+    private let sdrColorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
+    private lazy var sdrContext = CIContext(mtlCommandQueue: sharedMetalRenderingDevice.commandQueue,
+        options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+                  .workingFormat: CIFormat.RGBAh.rawValue, .cacheIntermediates: false])
+    private var sdrPool: CVPixelBufferPool?
+    private var sdrPoolWidth = 0
+    private var sdrPoolHeight = 0
+    // Hold pool buffers until the compositor has waited for this frame's GPU work.
+    private var convertedBuffers: [CVPixelBuffer] = []
+    private var sourceConversionFailed = false
+
     let passthrough = Passthrough()
     let rotatePassThrough = RotatePassthrough()
     let yuvToRGBConversion = YUVToRGBConversion()
@@ -16,6 +29,7 @@ class LayerCompositor {
 
     // MARK: - Public
     func renderPixelBuffer(_ pixelBuffer: CVPixelBuffer, for request: AVAsynchronousVideoCompositionRequest) {
+        sourceConversionFailed = false
         guard let instruction = request.videoCompositionInstruction as? VideoCompositionInstruction else {
             return
         }
@@ -144,7 +158,11 @@ class LayerCompositor {
         }
     }
 
-    private func bgraVideoTexture(from pixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> Texture? {
+    private func bgraVideoTexture(from sourcePixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> Texture? {
+        guard let pixelBuffer = sdrSourceBuffer(sourcePixelBuffer) else {
+            sourceConversionFailed = true
+            return nil
+        }
         var videoTexture: Texture?
         let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
         let bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
@@ -189,6 +207,63 @@ class LayerCompositor {
             videoTexture = Texture.makeTexture(pixelBuffer: pixelBuffer)
         }
         return videoTexture
+    }
+
+    private func sdrSourceBuffer(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        func tag(_ key: CFString) -> String? {
+            CVBufferGetAttachment(source, key, nil)?.takeUnretainedValue() as? String
+        }
+        let transfer = tag(kCVImageBufferTransferFunctionKey)
+        let primaries = tag(kCVImageBufferColorPrimariesKey)
+        let matrix = tag(kCVImageBufferYCbCrMatrixKey)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        let hdr = transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
+            || transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+        let tenBit = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        let otherColor = (primaries != nil && primaries != (kCVImageBufferColorPrimaries_ITU_R_709_2 as String))
+            || (transfer != nil && transfer != (kCVImageBufferTransferFunction_ITU_R_709_2 as String))
+            || (matrix != nil && matrix != (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String))
+        guard hdr || tenBit || otherColor else { return source }
+
+        let width = CVPixelBufferGetWidth(source), height = CVPixelBufferGetHeight(source)
+        if sdrPool == nil || width != sdrPoolWidth || height != sdrPoolHeight {
+            sdrPool = nil
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+            guard CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &sdrPool) == kCVReturnSuccess else { return nil }
+            sdrPoolWidth = width
+            sdrPoolHeight = height
+        }
+        guard let pool = sdrPool else { return nil }
+        var result: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &result) == kCVReturnSuccess,
+              let result = result else { return nil }
+        // CVPixelBuffer -> CVPixelBuffer keeps the existing video orientation.
+        // Track rotation is still applied exactly once by the old Metal path.
+        let image = CIImage(cvPixelBuffer: source, options: [.toneMapHDRtoSDR: hdr])
+        sdrContext.render(image, to: result,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: sdrColorSpace)
+        CVBufferSetAttachment(result, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(result, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(result, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+        convertedBuffers.append(result)
+        return result
+    }
+
+    // Converted pool buffers must remain alive until Metal finishes sampling them.
+    func finishSourceConversion() -> Bool {
+        guard !convertedBuffers.isEmpty else { return !sourceConversionFailed }
+        guard let completion = sharedMetalRenderingDevice.commandQueue.makeCommandBuffer() else { return false }
+        completion.commit()
+        completion.waitUntilCompleted()
+        convertedBuffers.removeAll()
+        return completion.status == .completed && !sourceConversionFailed
     }
 
     private func videoTextureSize(bufferWidth: Int, bufferHeight: Int, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> (width: Int, height: Int) {

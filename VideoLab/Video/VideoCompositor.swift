@@ -16,12 +16,19 @@ class VideoCompositor: NSObject, AVVideoCompositing {
     
     private let layerCompositor = LayerCompositor()
     
+    // Accept original source colors and convert to SDR inside LayerCompositor.
+    var supportsHDRSourceFrames: Bool { true }
+    var supportsWideColorSourceFrames: Bool { true }
+    var canConformColorOfSourceFrames: Bool { true }
+
     // MARK: - AVVideoCompositing
     var sourcePixelBufferAttributes: [String : Any]? =
-        [String(kCVPixelBufferPixelFormatTypeKey): [Int(kCVPixelFormatType_32BGRA),
+        [String(kCVPixelBufferPixelFormatTypeKey): [Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+                                                    Int(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
+                                                    Int(kCVPixelFormatType_32BGRA),
                                                     Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
                                                     Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)],
-         String(kCVPixelBufferOpenGLESCompatibilityKey): true]
+         String(kCVPixelBufferMetalCompatibilityKey): true]
     
     var requiredPixelBufferAttributesForRenderContext: [String : Any] =
         [String(kCVPixelBufferPixelFormatTypeKey): Int(kCVPixelFormatType_32BGRA),
@@ -70,6 +77,7 @@ class VideoCompositor: NSObject, AVVideoCompositing {
         }
         
         layerCompositor.renderPixelBuffer(newPixelBuffer, for: request)
+        guard layerCompositor.finishSourceConversion() else { return nil }
         
         return newPixelBuffer
     }
