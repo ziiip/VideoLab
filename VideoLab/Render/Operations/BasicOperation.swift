@@ -29,6 +29,9 @@ open class BasicOperation: Animatable {
     public var shouldInputSourceTexture = false
     public var timeRange: CMTimeRange?
     public let renderPipelineState: MTLRenderPipelineState
+    private let pipelineVertexName: String
+    private let pipelineFragmentName: String
+    private var formatPipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     let operationName: String
     public var inputTextures = [UInt: Texture]()
     public var textureClearColor: Color? = .transparent
@@ -39,6 +42,8 @@ open class BasicOperation: Animatable {
         self.operationName = operationName
         
         let concreteVertexFunctionName = vertexFunctionName ?? defaultVertexFunctionNameForInputs(numberOfInputs)
+        pipelineVertexName = concreteVertexFunctionName
+        pipelineFragmentName = fragmentFunctionName
         
         let (pipelineState, vertexUniforms, fragmentUniforms) = generateRenderPipelineState(vertexFunctionName:concreteVertexFunctionName,
                                                                        fragmentFunctionName:fragmentFunctionName,
@@ -62,7 +67,7 @@ open class BasicOperation: Animatable {
                 return
             }
             
-            commandBuffer.renderQuad(pipelineState: renderPipelineState,
+            commandBuffer.renderQuad(pipelineState: pipelineState(for: outputTexture),
                                      uniformSettings: uniformSettings,
                                      inputTextures: inputTextures,
                                      outputTexture: outputTexture,
@@ -70,6 +75,17 @@ open class BasicOperation: Animatable {
                                      enableOutputTextureRead: enableOutputTextureRead)
             commandBuffer.commit()
         }
+    }
+
+    /// Call under textureInputSemaphore, as renderTexture and custom operations do.
+    public func pipelineState(for outputTexture: Texture) -> MTLRenderPipelineState {
+        let format = outputTexture.texture.pixelFormat
+        if format == .bgra8Unorm { return renderPipelineState }
+        if let state = formatPipelines[format] { return state }
+        let (state, _, _) = generateRenderPipelineState(vertexFunctionName: pipelineVertexName,
+            fragmentFunctionName: pipelineFragmentName, operationName: operationName, pixelFormat: format)
+        formatPipelines[format] = state
+        return state
     }
     
     // MARK: - Animatable

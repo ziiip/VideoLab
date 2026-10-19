@@ -61,7 +61,8 @@ extension MTLCommandBuffer {
 }
 
 func generateRenderPipelineState(vertexFunctionName:String,
-                                 fragmentFunctionName:String, operationName:String) -> (MTLRenderPipelineState, [String: UniformInfo], [String: UniformInfo]) {
+                                 fragmentFunctionName:String, operationName:String,
+                                 pixelFormat: MTLPixelFormat = .bgra8Unorm) -> (MTLRenderPipelineState, [String: UniformInfo], [String: UniformInfo]) {
     guard let vertexFunction = sharedMetalRenderingDevice.shaderLibrary.makeFunction(name: vertexFunctionName) else {
         fatalError("\(operationName): could not compile vertex function \(vertexFunctionName)")
     }
@@ -71,7 +72,7 @@ func generateRenderPipelineState(vertexFunctionName:String,
     }
     
     let descriptor = MTLRenderPipelineDescriptor()
-    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormat.bgra8Unorm
+    descriptor.colorAttachments[0].pixelFormat = pixelFormat
     descriptor.rasterSampleCount = 1
     descriptor.vertexFunction = vertexFunction
     descriptor.fragmentFunction = fragmentFunction

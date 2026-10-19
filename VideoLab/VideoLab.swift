@@ -22,6 +22,26 @@ public class VideoLab {
     public init(renderComposition: RenderComposition) {
         self.renderComposition = renderComposition
     }
+
+    /// Configure marked SDR graphics in HDR compositions using numeric rendering values.
+    /// `gain` multiplies linear RGB (1 is neutral, 2 doubles it); alpha is unchanged.
+    /// `referenceWhiteHLG` optionally maps source white to a normalized HLG signal in (0, 1].
+    /// Nil preserves source white. Invalid gains fall back to 1; invalid white signals to nil.
+    /// Instructions are replaced so frames already being rendered keep their snapshot.
+    public static func configureHDRGraphics(in composition: AVMutableVideoComposition,
+                                           gain: Float, referenceWhiteHLG: Float? = nil) {
+        composition.instructions = composition.instructions.map { instruction -> AVVideoCompositionInstructionProtocol in
+            guard let original = instruction as? VideoCompositionInstruction else { return instruction }
+            let copy = VideoCompositionInstruction(videoRenderLayers: original.videoRenderLayers,
+                timeRange: original.timeRange, hdrGraphicsGain: gain,
+                hdrGraphicsReferenceWhiteHLG: referenceWhiteHLG)
+            copy.enablePostProcessing = original.enablePostProcessing
+            copy.containsTweening = original.containsTweening
+            copy.requiredSourceTrackIDs = original.requiredSourceTrackIDs
+            copy.passthroughTrackID = original.passthroughTrackID
+            return copy
+        }
+    }
     
     public func makePlayerItem() -> AVPlayerItem {
         let composition = makeComposition()

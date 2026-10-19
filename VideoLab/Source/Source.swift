@@ -7,6 +7,7 @@
 //
 
 import AVFoundation
+import CoreGraphics
 
 public protocol Source {
     var selectedTimeRange: CMTimeRange { get set }
@@ -14,6 +15,10 @@ public protocol Source {
     var isLoaded: Bool { get set }
 
     var weakContainerLayer: RenderLayer? { get set }
+
+    /// Declared color space of a premultiplied graphics texture that participates
+    /// in HDR graphics mapping. Nil preserves the source's legacy texture handling.
+    var hdrGraphicsColorSpace: CGColorSpace? { get }
 
     func load(completion: @escaping (NSError?) -> Void)
     func tracks(for type: AVMediaType) -> [AVAssetTrack]
@@ -27,6 +32,8 @@ public protocol Source {
 }
 
 extension Source {
+    public var hdrGraphicsColorSpace: CGColorSpace? { nil }
+
     public weak var weakContainerLayer: RenderLayer? {
         get { nil }
         set { }

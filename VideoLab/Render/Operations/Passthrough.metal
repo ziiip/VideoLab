@@ -70,5 +70,7 @@ fragment half4 rotatePassthroughFragment(SingleInputVertexIO fragmentInput [[sta
 {
     constexpr sampler quadSampler;
     half4 color = inputTexture.sample(quadSampler, fragmentInput.textureCoordinate).rgba;
-    return clamp(color, 0.0, 1.0);
+    // Linear HDR can exceed SDR white (1.0). UNorm SDR render targets still
+    // clamp on storage; float HDR targets must retain the extended values.
+    return color;
 }
