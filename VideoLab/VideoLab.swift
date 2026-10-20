@@ -27,19 +27,35 @@ public class VideoLab {
     /// `gain` multiplies linear RGB (1 is neutral, 2 doubles it); alpha is unchanged.
     /// `referenceWhiteHLG` optionally maps source white to a normalized HLG signal in (0, 1].
     /// Nil preserves source white. Invalid gains fall back to 1; invalid white signals to nil.
+    /// `timeRanges` limits the adjustment to the supplied timeline intervals.
+    /// Outside them, gain is 1 and white mapping is disabled. Nil applies everywhere;
+    /// an empty array disables the adjustment. Instructions are split at range boundaries.
     /// Instructions are replaced so frames already being rendered keep their snapshot.
     public static func configureHDRGraphics(in composition: AVMutableVideoComposition,
-                                           gain: Float, referenceWhiteHLG: Float? = nil) {
-        composition.instructions = composition.instructions.map { instruction -> AVVideoCompositionInstructionProtocol in
-            guard let original = instruction as? VideoCompositionInstruction else { return instruction }
-            let copy = VideoCompositionInstruction(videoRenderLayers: original.videoRenderLayers,
-                timeRange: original.timeRange, hdrGraphicsGain: gain,
-                hdrGraphicsReferenceWhiteHLG: referenceWhiteHLG)
-            copy.enablePostProcessing = original.enablePostProcessing
-            copy.containsTweening = original.containsTweening
-            copy.requiredSourceTrackIDs = original.requiredSourceTrackIDs
-            copy.passthroughTrackID = original.passthroughTrackID
-            return copy
+                                           gain: Float, referenceWhiteHLG: Float? = nil,
+                                           timeRanges: [CMTimeRange]? = nil) {
+        let ranges = timeRanges?.filter {
+            $0.isValid && !$0.isEmpty && $0.start.isNumeric && $0.end.isNumeric
+        }
+        composition.instructions = composition.instructions.flatMap { instruction -> [AVVideoCompositionInstructionProtocol] in
+            guard let original = instruction as? VideoCompositionInstruction else { return [instruction] }
+            let intersections = ranges?.map { $0.intersection(original.timeRange) }
+                .filter { $0.isValid && !$0.isEmpty } ?? []
+            let boundaries = ([original.timeRange.start, original.timeRange.end] +
+                intersections.flatMap { [$0.start, $0.end] }).sorted { $0 < $1 }
+            return zip(boundaries, boundaries.dropFirst()).compactMap { start, end -> AVVideoCompositionInstructionProtocol? in
+                guard start < end else { return nil }
+                let applies = ranges == nil || intersections.contains { $0.start <= start && start < $0.end }
+                let copy = VideoCompositionInstruction(videoRenderLayers: original.videoRenderLayers,
+                    timeRange: CMTimeRange(start: start, end: end),
+                    hdrGraphicsGain: applies ? gain : 1,
+                    hdrGraphicsReferenceWhiteHLG: applies ? referenceWhiteHLG : nil)
+                copy.enablePostProcessing = original.enablePostProcessing
+                copy.containsTweening = original.containsTweening
+                copy.requiredSourceTrackIDs = original.requiredSourceTrackIDs
+                copy.passthroughTrackID = original.passthroughTrackID
+                return copy
+            }
         }
     }
     

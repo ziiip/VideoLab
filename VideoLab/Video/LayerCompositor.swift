@@ -40,6 +40,18 @@ class LayerCompositor {
     // Retain converted SDR buffers and original HDR buffers through GPU use.
     private var convertedBuffers: [CVPixelBuffer] = []
 
+    private struct RecentVideoFrame {
+        let layer: VideoRenderLayer
+        let buffer: CVPixelBuffer
+        let compositionTime: CMTime
+        var didLogTailHold = false
+    }
+    // A movie's selected duration can extend beyond its available video samples.
+    // Bridge only a short tail, using the last raw frame of that exact layer.
+    private let maximumTailFrameHoldDuration = CMTime(value: 1, timescale: 4)
+    private var recentVideoFrames: [ObjectIdentifier: RecentVideoFrame] = [:]
+    private var previousCompositionTime: CMTime?
+
     init(hdr: Bool = false) { self.hdr = hdr }
     let passthrough = Passthrough()
     let rotatePassThrough = RotatePassthrough()
@@ -49,6 +61,7 @@ class LayerCompositor {
     // MARK: - Public
     func renderPixelBuffer(_ pixelBuffer: CVPixelBuffer, for request: AVAsynchronousVideoCompositionRequest) -> Bool {
         renderFailed = false
+        prepareRecentVideoFrames(at: request.compositionTime)
         if hdr {
             guard let instruction = request.videoCompositionInstruction as? VideoCompositionInstruction else { return false }
             if graphicsGainMultiplier != instruction.hdrGraphicsGain ||
@@ -227,7 +240,7 @@ class LayerCompositor {
             groupTexture.unlock()
         } else if videoRenderLayer.trackID != kCMPersistentTrackID_Invalid {
             // Texture layer source contains a video track
-            guard let pixelBuffer = request.sourceFrame(byTrackID: videoRenderLayer.trackID) else {
+            guard let pixelBuffer = sourceVideoFrame(for: videoRenderLayer, request: request) else {
                 renderFailed = true
                 return
             }
@@ -278,6 +291,51 @@ class LayerCompositor {
                 }
             }
         }
+    }
+
+    private func prepareRecentVideoFrames(at time: CMTime) {
+        if let previousCompositionTime, time < previousCompositionTime {
+            recentVideoFrames.removeAll()
+        } else {
+            recentVideoFrames = recentVideoFrames.filter { _, frame in
+                let range = frame.layer.timeRangeInTimeline
+                return range.start <= time && time <= range.end &&
+                    time - frame.compositionTime <= maximumTailFrameHoldDuration
+            }
+        }
+        previousCompositionTime = time
+    }
+
+    private func sourceVideoFrame(for layer: VideoRenderLayer,
+                                  request: AVAsynchronousVideoCompositionRequest) -> CVPixelBuffer? {
+        let key = ObjectIdentifier(layer)
+        let time = request.compositionTime
+        if let buffer = request.sourceFrame(byTrackID: layer.trackID) {
+#if DEBUG
+            if recentVideoFrames[key] == nil, let source = layer.renderLayer.source,
+               let track = source.tracks(for: .video).first {
+                print("[VideoRender] source-timing layer=\(key), track=\(layer.trackID), selected=\(source.selectedTimeRange), sourceVideoRange=\(track.timeRange), timeline=\(layer.timeRangeInTimeline)")
+            }
+#endif
+            recentVideoFrames[key] = RecentVideoFrame(layer: layer, buffer: buffer, compositionTime: time)
+            return buffer
+        }
+
+        let range = layer.timeRangeInTimeline
+        guard range.start <= time, time <= range.end,
+              range.end - time <= maximumTailFrameHoldDuration,
+              var recent = recentVideoFrames[key], recent.compositionTime <= time,
+              time - recent.compositionTime <= maximumTailFrameHoldDuration else { return nil }
+#if DEBUG
+        if !recent.didLogTailHold {
+            print("[VideoRender] source-tail-held layer=\(key), track=\(layer.trackID), pts=\(time.seconds), lastAvailable=\(recent.compositionTime.seconds), layerEnd=\(range.end.seconds), maxHold=\(maximumTailFrameHoldDuration.seconds), available=\(request.sourceTrackIDs)")
+        }
+#endif
+        recent.didLogTailHold = true
+        recentVideoFrames[key] = recent
+        // Keep the original timestamp: repeated misses must not renew the limit.
+        // Re-render the raw buffer so transforms, masks and graphics keep advancing.
+        return recent.buffer
     }
 
     private func bgraVideoTexture(from sourcePixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform, presentationSize: CGSize?) -> Texture? {
