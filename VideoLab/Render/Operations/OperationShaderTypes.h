@@ -12,7 +12,7 @@
 // It may be a bug in Xcode, maybe it will be fixed later
 // If you do not add this line, #include <metal_stdlib> will have an error
 // https://github.com/CocoaPods/CocoaPods/issues/7073
-#if __METAL_MACOS__ || __METAL_IOS__
+#if defined(__METAL_VERSION__)
 
 #include <metal_stdlib>
 using namespace metal;
@@ -35,6 +35,6 @@ struct TwoInputVertexIO
     float2 textureCoordinate2 [[user(texturecoord2)]];
 };
 
-#endif /* __METAL_MACOS__ || __METAL_IOS__ */
+#endif /* __METAL_VERSION__ */
 
 #endif /* OperationShaderTypes_h */

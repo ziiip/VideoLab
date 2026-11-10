@@ -10,9 +10,9 @@ import AVFoundation
 
 class VideoCompositor: NSObject, AVVideoCompositing {
     private var renderingQueue = DispatchQueue(label: "com.studio.VideoLab.renderingqueue")
-    private var renderContextQueue = DispatchQueue(label: "com.studio.VideoLab.rendercontextqueue")
-    private var renderContext: AVVideoCompositionRenderContext?
-    private var shouldCancelAllRequests = false
+    // SDR cancellation generation with request draining.
+    private let cancellationLock = NSLock()
+    private var generation: UInt = 0
     
     private let layerCompositor = LayerCompositor()
     
@@ -34,45 +34,54 @@ class VideoCompositor: NSObject, AVVideoCompositing {
         [String(kCVPixelBufferPixelFormatTypeKey): Int(kCVPixelFormatType_32BGRA),
          String(kCVPixelBufferOpenGLESCompatibilityKey): true]
 
-    func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
-        renderingQueue.sync {
-            renderContext = newRenderContext
-        }
-    }
+    func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
     
     enum PixelBufferRequestError: Error {
         case newRenderedPixelBufferForRequestFailure
     }
     
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
-        autoreleasepool {
-            renderingQueue.async {
-                if self.shouldCancelAllRequests {
+        cancellationLock.lock()
+        let submittedGeneration = generation
+        // Enqueue under the same lock used by cancellation so its drain barrier
+        // cannot overtake a request that already captured the old generation.
+        renderingQueue.async {
+            autoreleasepool {
+                guard !self.isCancelled(submittedGeneration) else {
                     request.finishCancelledRequest()
-                } else {
-                    guard let resultPixels = self.newRenderedPixelBufferForRequest(request) else {
-                        request.finish(with: PixelBufferRequestError.newRenderedPixelBufferForRequestFailure)
-                        return
-                    }
-                    
+                    return
+                }
+                let resultPixels = self.newRenderedPixelBufferForRequest(request)
+                if self.isCancelled(submittedGeneration) {
+                    request.finishCancelledRequest()
+                } else if let resultPixels {
                     request.finish(withComposedVideoFrame: resultPixels)
+                } else {
+                    request.finish(with: PixelBufferRequestError.newRenderedPixelBufferForRequestFailure)
                 }
             }
         }
+        cancellationLock.unlock()
     }
-    
+
+    private func isCancelled(_ submittedGeneration: UInt) -> Bool {
+        cancellationLock.lock()
+        defer { cancellationLock.unlock() }
+        return generation != submittedGeneration
+    }
+
     func cancelAllPendingVideoCompositionRequests() {
-        renderingQueue.sync {
-            shouldCancelAllRequests = true
-        }
-        renderingQueue.async {
-            self.shouldCancelAllRequests = false
-        }
+        cancellationLock.lock()
+        generation &+= 1
+        cancellationLock.unlock()
+        // AVVideoCompositing requires every old request to finish before return.
+        // Mark cancellation before the barrier so queued frames skip rendering.
+        renderingQueue.sync {}
     }
-    
+
     // MARK: - Private
     func newRenderedPixelBufferForRequest(_ request: AVAsynchronousVideoCompositionRequest) -> CVPixelBuffer? {
-        guard let newPixelBuffer = renderContext?.newPixelBuffer() else {
+        guard let newPixelBuffer = request.renderContext.newPixelBuffer() else {
             return nil
         }
         
